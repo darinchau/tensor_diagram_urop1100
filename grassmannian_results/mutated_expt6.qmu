@@ -1,0 +1,21 @@
+//Number of points
+4
+//Vertex radius
+9
+//Labels shown
+1
+//Matrix
+4 4
+0 0 1 0 
+0 0 -1 0 
+-1 1 0 1 
+0 0 -1 0 
+//Points
+9 78.0 134.0 
+9 467.0 375.0 
+9 121.0 129.0 
+9 478.0 484.0 
+//Cluster is null
+//Historycounter
+-1
+//History

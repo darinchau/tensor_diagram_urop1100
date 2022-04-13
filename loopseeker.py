@@ -100,10 +100,15 @@ def Mutate(matrix, k: int):
     return matrix
 
 best_found = []
+best_B = np.zeros((1, 1))
 
-# If your ram exceeds a certain percentage then it will force exit
-def Phase2(original, min_weight, exit_percentage = 95):
+# If your ram exceeds a certain percentage or if the number of checked instances exceeds the force_ex threshold then it will force exit
+# Find shorter: if set to True, the loop will continue to run even if we find an entry with no loops
+# Try find shortest: if set to True, the program will always try to find the shortest mutation sequence from the original
+def Phase2(original, min_weight, exit_percentage = 95, find_shorter = True, force_ex: int = 10000, try_find_shortest = True):
     global best_found
+    global best_B
+    best_B = np.zeros((dimensions, dimensions), dtype = int)
     
     # Random search
     iterations = 0
@@ -116,15 +121,22 @@ def Phase2(original, min_weight, exit_percentage = 95):
 
     last_print_len = 0
 
-    found = False
-    force_exit = False
+    found, force_exit, local_exit = False, False, False
+    B_matrix = np.array(original, dtype = int)
 
+    # Main loop
     while not force_exit:
-        B_matrix = np.array(original, dtype = int)
-        local_iter = 0
+
         local_exit = False
+        mutation_sequence = []
+
+        # If all we want is to find a good sequence then why not start from the best sequence so far
+        if not try_find_shortest:
+            for m in best_found:
+                mutation_sequence.append(m)
+
         # Check if the current B_matrix exceeds the max arrow multiple
-        while not force_exit and not local_exit and np.count_nonzero(np.abs(B_matrix) > 50) <= 3 and local_iter < 1e5:
+        while (not force_exit) and (not local_exit):
             # Decide on a spot to mutate
             random_number = random.randint(0, dimensions - 1)
 
@@ -142,10 +154,13 @@ def Phase2(original, min_weight, exit_percentage = 95):
             w = weight(B_matrix)
 
             # Check the weight
+            # Test 1: If we have not found a quiver with no loops then we update the best sequence
             if not found and (w < min_weight or (w == min_weight and len(mutation_sequence) < len(best_found))):
                 print("\nThis is a low {} weight entry".format(w))
                 print(mutation_sequence)
                 # Update lowest and overwrite print eraser
+                if not try_find_shortest:
+                    best_B = np.array(B_matrix)
                 best_found = mutation_sequence
                 min_weight = w
                 last_print_len = 0
@@ -155,40 +170,51 @@ def Phase2(original, min_weight, exit_percentage = 95):
             # Use a dumber algorithm than dfs to check first. It is a necessary condition for an entry with no loops to have #arrows = #vertices - 1
             # However the condition is not sufficient since the graph might just be disjoint
             # I believe the indexing is done using something like BST so it will be a bit faster this way
+
+            # Test 2:  If we have not found a quiver with no loops but now we found one, then we proceed
             if not found and w <= dimensions - 1 and not HasLoops(B_matrix):
                 print("\nThis entry has no loops!!!!")
                 print(mutation_sequence)
-                # Mark found but also overwrite the print eraser
                 found = True
+                if not try_find_shortest:
+                    best_B = np.array(B_matrix)
                 last_print_len = 0
                 best_found = mutation_sequence
                 local_exit = True
+                # If the instruction says we do not need to find a shorter sequence, then we bounce
+                if not find_shorter: force_exit = True
 
             # See if we can find a shorter one if we already found something. Guarding it with the found condition so it exits early if we havent even found anything
+            # Test 3: if we have already found a sequence with no loops but we found a shorter sequence, then we update
             if found and not HasLoops(B_matrix) and len(mutation_sequence) < len(best_found):
                 print("\nThis entry has no loops and it is a shorter sequence than the previous one. It has length {}".format(len(mutation_sequence)))
                 print(mutation_sequence)
+                if not try_find_shortest:
+                    best_B = np.array(B_matrix)
                 last_print_len = 0
                 best_found = mutation_sequence
                 local_exit = True
             
+            # If we found a sufficiently short sequence, we force exit
             # Alright this must be good enough. Exiting
             if found and len(best_found) < dimensions:
                 print("Alright this is good enough, exiting...")
                 last_print_len = 0
                 force_exit = True
+            
+            # Check exit conditions            
+            if len(mutation_sequence) > 40000:
+                print("The quiver is not exploding! It is probably a loop finite mutation type")
+                force_exit = True
+            
+            if np.count_nonzero(np.abs(B_matrix) > 50) > 3:
+                local_exit = True
 
             checked.add(tuple(mutation_sequence))
-            local_iter += 1
 
         # Reset stuff
         iterations += 1
-        mutation_sequence = []
-
-        # If it exit due to exploding local iteration, then finite type then the quiver will not explode and there will be too many local iterations
-        if local_iter == 1e5:
-            print("\nThe quiver is not exploding. It probably has finite type or finite mutation type.")
-            force_exit = True
+        B_matrix = np.array(original, dtype = int) if try_find_shortest else np.array(best_B, dtype = int)
 
         # Print things every 16 iterations
         if iterations & 15 == 0 and not force_exit:
@@ -202,9 +228,16 @@ def Phase2(original, min_weight, exit_percentage = 95):
             # Reset when ram is exploding... usually we run these overnight
             if psutil.virtual_memory().percent > exit_percentage:
                 force_exit = True
-                del checked
-                time.sleep(1)
+
+            if iterations > force_ex:
+                force_exit = True
+        
+        if force_exit:
+            print()
+            print("Force Exiting...")
     
+    del checked
+    time.sleep(1)
     print()
     print("Stopping phase 2...")
     return found
