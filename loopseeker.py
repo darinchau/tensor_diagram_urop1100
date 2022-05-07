@@ -3,9 +3,12 @@ import numpy as np
 import time
 import random
 import psutil
+from tensordiagram import weight, Mutate
+from utility import *
 
 dimensions = 10
 
+# Retrieve the mutation class obtained from qmu
 def IndexData(fn):
     # Preprocess the data: open file and split the string right before the matrix
     file = open(fn, "r")
@@ -27,7 +30,6 @@ def IndexData(fn):
                 matrix[i, j] = int(nums[j])
         y.append(matrix)
     return y
-
 
 # Now y is a list of around 40000-ish length containing all the exchange matrices
 # It remains to run a dfs through all these ys and print the index of the ones without loops
@@ -58,10 +60,7 @@ def HasLoops(matrix: np.ndarray):
     assert len(visited_nodes) == dimensions
     return False
 
-# Calculate the number of arrows of a matrix
-def weight(matrix):
-    return int(np.sum(np.abs(matrix))/2)
-
+# Phase 1: search through a list of mutated quivers to see if they have loops. Typically they are generated from the qmu file
 def Phase1(y: list):
     t1 = time.time()
     found = False
@@ -88,16 +87,6 @@ def Phase1(y: list):
     print("Time taken = %f seconds" % round(t2 - t1, 5))
     print("Lowest weight entry: {} with weight {}".format(minimum_weight_entry, lowest_num_arrows))
     return found, lowest_num_arrows
-
-# Define mutations.
-def Mutate(matrix, k: int):
-    # Since we need to sort of update the whole matrix all at once we construct an identical one to keep track of stuff
-    B = np.array(matrix, dtype = int)
-    for i in range(B.shape[0]):
-        for j in range(B.shape[1]):
-            # Equation 3.10 in Professor Ip's lecture notes
-            matrix[i, j] = -B[i, j] if (k == i or k == j) else B[i, j] + 0.5 * (np.abs(B[i, k]) * B[k , j] + B[i, k] * np.abs(B[k, j]))
-    return matrix
 
 best_found = []
 best_B = np.zeros((1, 1))
@@ -242,6 +231,134 @@ def Phase2(original, min_weight, exit_percentage = 95, find_shorter = True, forc
     print("Stopping phase 2...")
     return found
 
+# Takes in the quiver and the target quiver, returns a list which is the mutation sequence and the relabelling
+def search(B_matrix, target, max_search_length, try_first = []):
+    # initiate a empty list to keep track of the current mutation sequence
+    # Try all the "try first" sequences
+    # while queue is not empty: (which it will practically never be unless we have reached max search length)
+    #   take a sequence s from queue
+    #   do the mutation according to q
+    #   For every node at quiver:
+    #       mutate at node
+    #       if the quiver is equivalent to target up to relabelling:
+    #           return this sequence
+    #   else add all mutation sequences to this quiver's neighbour into the queue
+    num_nodes = B_matrix.shape[0]
+    assert  B_matrix.shape[0] ==  B_matrix.shape[1]
+    if len(try_first) > 0:
+        for seq in try_first:
+            B = Mutate(B_matrix, seq)
+            is_relabel, relabelling = is_quiver_relabelling(B, target)
+            if is_relabel:
+                return seq, relabelling
+        print("The try first ones are not right! Doing regular search...")
+    q = [[]]
+    while len(q) > 0:
+        seq = q.pop(0)
+        B = Mutate(B_matrix, seq)
+        for i in range(num_nodes):
+            B1 = Mutate(B, i)
+            is_relabel, relabelling = is_quiver_relabelling(B1, target)
+            if is_relabel:
+                seq.append(i)
+                return seq, relabelling
+
+        if len(seq) < max_search_length:
+            for i in range(num_nodes):
+                q.append(seq + [i])
+
+# Given two quiver see if they are equivalent up to relabelling
+def is_quiver_relabelling(B_matrix, target):
+    # I am told this is an NP problem so let's first figure out when it is definitely not isomorphic
+    # If there is a different number of arrows or nodes it is definitely not equivalent up to relabelling
+    # If it is the exact same then its definitely equivelent up to relabeling
+    if B_matrix.shape != target.shape: return False, np.array([])
+    if weight(B_matrix) != weight(target): return False, np.array([])
+    num_nodes = B_matrix.shape[0]
+    if np.count_nonzero(B_matrix == target) == num_nodes ** 2: return True, np.arange(num_nodes)
+    # If they do not have the same amount of each multiple arrows it is definitely not equivalent up to relabelling
+    # B_pos = np.abs(B_matrix)
+    # T_pos = np.abs(target)
+    B_arrow_weights, B_arrow_counts = np.unique(B_matrix, return_counts = True)
+    T_arrow_weights, T_arrow_counts = np.unique(target, return_counts = True)
+    if B_arrow_weights.shape != T_arrow_weights.shape: return False, np.array([])
+    if np.count_nonzero(B_arrow_weights == T_arrow_weights) < B_arrow_weights.shape[0]: return False, np.array([])
+    if np.count_nonzero(B_arrow_counts == T_arrow_counts) < B_arrow_counts.shape[0]: return False, np.array([])
+    # If the number of nodes with a given valence(# edges incident to it) cannot be paired up one by one, it is definitely not equivalent up to relabelling
+    # We also create a dictionary of valence so that we can check drastically smaller amount of cases later
+    # Keys in the valence dict is a tuple of (#incoming arrows, #outgoing arrows), values is a list of node index with said valence
+    # print("We are at the relabeling part. Have fun.")
+    B_valence, T_valence = {}, {}
+
+    def get_valence(valence, matrix, i):
+        row_i = np.array(matrix[i], dtype = int)
+        num_in_arrows = -np.sum(row_i[row_i < 0])
+        num_out_arrows = np.sum(row_i[row_i > 0])
+        key = (num_in_arrows, num_out_arrows)
+        if key in valence.keys():
+            valence[key].append(i)
+        else:
+            valence[key] = [i]
+        
+    for i in range(num_nodes):
+        get_valence(B_valence, B_matrix, i)
+        get_valence(T_valence, target, i)
+    
+    # print(sorted(B_valence.keys()), sorted(T_valence.keys()))
+    if sorted(B_valence.keys()) != sorted(T_valence.keys()): return False, np.array([])
+    # We feel like we ran out of ideas so we just try every reindexing now.
+    # Make an empty list Q to store all the possible "sensible" reindexings in the sense of matching valence
+    # Also keep track of the number n of permutations generated up to the last key
+    # for key in B valence dictionary:
+    #   for i < n:
+    #       pop the first element s from Q which should be a numpy array
+    #       generate permutations of B_valence[key] which is a list of node indices
+    #       for each permutation:
+    #           copy s to a new numpy array
+    #           using array indexing magic, we can put the permutation in place by s[T_valence[key]] = permutation
+    #           append this numpy array to Q
+    #   update num_sequences
+    queue = [np.zeros((num_nodes,), dtype = int)]
+    num_sequences = 1
+    for key in B_valence.keys():
+        for _ in range(num_sequences):
+            seq = queue.pop(0)
+            perm = np.array(B_valence[key], dtype = int)
+            # Generate using Heap algorithm
+            n = len(perm)
+            stack_state = np.zeros((n, ), dtype = int)
+            # First output the original
+            seq_copy = np.array(seq, dtype = int)
+            seq_copy[T_valence[key]] = perm
+            queue.append(seq_copy)
+            n = len(perm)
+            i = 0
+            while i < n:
+                if stack_state[i] < i:
+                    if i % 2 == 0:
+                        perm[[0, i]] = perm[[i, 0]]
+                    else:
+                        perm[[stack_state[i], i]] = perm[[i, stack_state[i]]]
+                    seq_copy = np.array(seq, dtype = int)
+                    seq_copy[T_valence[key]] = perm
+                    queue.append(seq_copy)
+                    stack_state[i] += 1
+                    i = 0
+                else:
+                    stack_state[i] = 0
+                    i += 1
+        num_sequences = len(queue)
+    
+    # Now try every permutation
+    for i in range(num_sequences):
+        perm = queue[i]
+        B = np.array(B_matrix, dtype = int)
+        B = B[:, perm]
+        B = B[perm]
+        if np.count_nonzero(B == target) == num_nodes ** 2:
+            return True, perm
+        fprint(i, num_sequences, "Trying permutation ")
+    return False, np.array([])
 
 if __name__ == "__main__":
     fn = input("Enter filename:")

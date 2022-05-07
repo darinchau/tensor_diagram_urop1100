@@ -20,7 +20,7 @@ def DetermineBestSequence(i, signature, case_name):
     ls.Phase2(matrix, ls.weight(matrix), exit_percentage = 90, find_shorter = False, force_ex = 100000, try_find_shortest = False)
 
     # Write the result to the file
-    with open(result_fn, "w") as f:
+    with open(result_fn, "a") as f:
         write_str = "The case {} with signature {}, best mutation sequence of {} length = {}\n".format(i, str(signature), len(ls.best_found) ,str(ls.best_found))
         f.write(write_str)
         f.seek(0)
