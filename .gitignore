@@ -1,3 +1,6 @@
-__pycache__
-quiver
-result.txt
+*
+dataindexer.py
+loopseeker.py
+main.py
+tensordiagram.py
+utility.py
