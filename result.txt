@@ -1,8 +1,0 @@
-For n = 6, shortest mutation sequence = [0, 2, 1]
-For n = 7, shortest mutation sequence = [4, 2, 1]
-For n = 8, shortest mutation sequence = [1, 2, 4, 5, 3]
-For n = 9, shortest mutation sequence = [4, 2, 1, 5, 7, 8]
-For n = 10, shortest mutation sequence = [4, 2, 1, 5, 7, 8]
-For n = 11, shortest mutation sequence = [4, 2, 1, 5, 7, 8]
-For n = 12, shortest mutation sequence = [4, 2, 1, 5, 7, 8]
-For n = 12, shortest mutation sequence = [4, 2, 1, 5, 7, 8]
