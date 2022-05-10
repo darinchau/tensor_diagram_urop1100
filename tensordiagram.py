@@ -161,10 +161,14 @@ class J:
             return f"J({self.top}, {self.bottom})" 
         return "NOT AN INVARIANT"
     
-    def Copy(self):
+    # I got messed up with my implementations lol
+    def copy(self):
         return J(self.top, self.bottom)
 
-# Product of J invariants
+    def Copy(self):
+        return self.copy()
+
+# Wapper for a product of J invariants
 class InvariantTerm:
     def __init__(self, equation: list):
         self.equation = equation
@@ -203,7 +207,29 @@ class InvariantTerm:
         if sorted(self_lis) == sorted(eqn_list): return True
         return False
 
-# A three InvariantTerm exchange relation
+    # This makes stuff indexable
+    def __iter__(self):
+        self.__n = 0
+        return self
+    
+    def __next__(self):
+        a = self.__n
+        if self.__n >= len(self.equation):
+            raise StopIteration
+        self.__n += 1
+        return self.equation[a]
+    
+    def copy(self):
+        return InvariantTerm([j.copy() for j in self.equation])
+    
+    def __getitem__(self, key):
+        return self.equation[key]
+    
+    def __setitem__(self, key, val):
+        assert type(val) == type(J())
+        self.equation[key] = val
+
+# A three InvariantTerm exchange relation toTerms means "arrow from x to _" and from terms means "arrow to x from _"
 class SkeinRelation:
     def __init__(self, exchangeTerm: list, toTerms: list, fromTerms: list, signature: str = "", original: bool = True):
         # Exchange term is the xx' in a typical cluster exchange relation
@@ -234,7 +260,7 @@ class SkeinRelation:
     def __eq__(self, rel):
         if type(rel) != type(self): return False
         # The exchange mutation term matters, so the ordering of this part must be correct
-        if not self.ex.equation[0] == rel.ex.equation[0] or not self.ex.equation[1] == rel.ex.equation[1]: return False
+        if not self.ex[0] == rel.ex[0] or not self.ex[1] == rel.ex[1]: return False
         return self.to == rel.to and self.fr == rel.fr
 
     def Export(self, mode = "math"):
@@ -242,7 +268,7 @@ class SkeinRelation:
             st = [s if (s == plus or s == equal) else str(s) for s in self.equation]
             return "\\[" + ' '.join(st) + " \\hspace{8pt} \\text{" + self.signature + "} \\]"
         elif mode == 'python':
-            ex, to, fr = [j.Export() for j in self.ex.equation], [j.Export() for j in self.to.equation], [j.Export() for j in self.fr.equation]
+            ex, to, fr = [j.Export() for j in self.ex], [j.Export() for j in self.fr], [j.Export() for j in self.fr]
             exst, frst, tost = ", ".join(ex), ", ".join(fr), ", ".join(to)
             st = f"SkeinRelation([{exst}], [{tost}], [{frst}], signature = \"{self.signature})\", original = {self.original})"
             return st
@@ -255,6 +281,12 @@ class SkeinRelation:
         eq[0:1] = self.ex.equation
         # self.signature += " \t\t swapped"
         self.equation = eq
+    
+    def copy(self):
+        exc = self.ex.copy()
+        fro = self.fr.copy()
+        too = self.to.copy()
+        return SkeinRelation(exc.equation, too.equation, fro.equation, self.signature, self.original)
 
 # A node on a tensor diagram
 class TensorNode:
@@ -508,7 +540,7 @@ class TensorDiagram:
         if verbose: 
             print(last)
         while i < maxIter:
-            
+            # factor
             f = self.__factorRecursive__(equation, isOneTerm, verbose)
             current = str(f)
             if current == last: 
@@ -526,13 +558,7 @@ class TensorDiagram:
             print("Result: " + str(equation) + "\n")
         return equation
 
-    def Untangle(self):
-        pass
-    
-    def Validate(self):
-        # Check for crossings and 4 cycles,validate all internal edges are 3 connected, and black dots are connected to white dots
-        pass
-
+    # Add a J invariant to the cluster
     def AddJInvariant(self, inv: J):
         # J_p^q invariant
         if inv.t == 1: 
@@ -559,23 +585,20 @@ class TensorDiagram:
             nodew.connect(self.AddSpecialInvariant(inv.bottom[1], w))
             nodeb.connect(nodew)
 
+    # Process Skein equation
     def Skein(self, skein: SkeinRelation, verbose = False):
-        if verbose:
-            print("\n=================================================================================\nUnprocessed equation: ", end = "")
-            print(skein.Export(mode = "python"))
-            print()
-            
+        if verbose: print("\n=================================================================================\nUnprocessed equation: " + skein.Export(mode = "python"))
         fr = self.Factor(skein.fr, True, verbose = verbose)
         to = self.Factor(skein.to, True, verbose = verbose)
         ex = self.Factor(skein.ex, True, verbose = verbose)
 
         # That means all 3 terms might have some common invariant that we need to factor out and remove
         extra_ex = []
-        for j in ex.equation:
+        for j in ex:
             extra_ex.append(J(j.top, j.bottom))
         
         for j in extra_ex:
-            if (Contains(fr.equation, j) or fr.isZero) and (Contains(to.equation, j) or to.isZero):
+            if (Contains(fr, j) or fr.isZero) and (Contains(fr, j) or to.isZero):
                 if verbose:
                     print("Removing term " + str(j) + " for: \t", end = "")
                     print(ex, fr, to)
@@ -612,13 +635,14 @@ class TensorDiagram:
             print("\n\n")
         return eq
 
+    #################################### Helper functions for printing the diagram ####################################
+
     #Reset All nodes
     def ResetAll(self):
         for n in self.nodes:
             n.explored = False
             n.parent = None
 
-        
     # Run a BFS algorithm to get the distance to boundary for each node
     def __GetClosestBoundary__(self, root: TensorNode):
             q = [root]
@@ -634,7 +658,6 @@ class TensorDiagram:
                         neighbourNode.parent = v
                         neighbourNode.explored = True
                         q.append(neighbourNode)
-
 
     def __SumDist__(self, node, secondpass = False):
         sum = 0
@@ -667,7 +690,6 @@ class TensorDiagram:
                     if np.linalg.norm(direction) < edgeThreshold: sum += edgeRepellance * len(self.nodes)
         return sum
 
-
     def OptimizeNode(self, maxDist, divs, secondpass : bool = False):
         for i in range(maxDist + 1):
             radius = 1 / (i + 1) ** 0.5
@@ -688,9 +710,6 @@ class TensorDiagram:
                     node.coordinates = s[i]
                     result[i] = self.__SumDist__(node, secondpass)
                 node.coordinates = s[np.argmin(result)]
-
-    def GetTensor(self):
-        raise NotImplementedError
 
     # Puts the nodes on a fixed radius and optimize the positions
     def OptimizeDiagram(self, divs = 500):
@@ -860,6 +879,16 @@ class Triangulation:
         self.diagonals = diagonals                    # the list of diagonals: tuple
         self.trivial = False
 
+    # Generates a "triangulation" thats a list of diagonals with the given list
+    @staticmethod
+    def GenerateTriangulation(lis: list):
+        n = len(lis)
+        tri = [(lis[0], lis[2]), (lis[2], lis[-1])]
+        for i in range(3, int(np.floor(n / 2)) + 1):
+            tri.append((lis[i], lis[2 - i]))
+            tri.append((lis[i], lis[1 - i]))
+        return tri
+
     def __str__(self):
         return str(self.diagonals)
 
@@ -871,20 +900,14 @@ class ClusterVariable(J):
         # List of J* to check against
         self.fromTerms = []
         self.toTerms = []
-        self.coordinates = (0, 0)
-
-    def __str__(self):
-        s = f"J-invariant: {self.j} From: "
-        for t in self.fromTerms:
-            s += str(t)
-        s += " To: "
-        for t in self.toTerms:
-            s += str(t)
-        return s
+        self.isFrozen = not cluster
 
     def reset(self):
         self.fromTerms = []
         self.toTerms = []
+    
+    def __eq__(self, J2):
+        return super().__eq__(J2)
 
 # Generate the QMU file from exchange matrix
 def GetQMU(B_matrix : np.ndarray, fileName, save_file = True):
@@ -974,10 +997,7 @@ def Mutate(matrix, k):
 class TriangulationDiagram(TensorDiagram):
     def __init__(self, signature):
         super().__init__(signature)
-        tri = [(0,2), (2, self.l - 1)]
-        for i in range(3, int(np.floor(self.l / 2)) + 1):
-            tri.append((i, self.l - i + 2))
-            tri.append((i, self.l - i + 1))
+        tri = Triangulation.GenerateTriangulation(list(range(self.l)))
         self.triangulation = Triangulation(self.l, tri)
         self.generated = False
 
@@ -1013,7 +1033,8 @@ class TriangulationDiagram(TensorDiagram):
 
         for t in self.triangulation.trigs:
             cv0.append(self.J2(*t))
-     
+
+        # Helper function to factor all terms in a cluster variable
         def FactorAllTerms(cv):
             cv2 = []
             while len(cv) > 0:
@@ -1027,10 +1048,9 @@ class TriangulationDiagram(TensorDiagram):
             return cv2
 
         # Now factor everything 
-        maxIters = 3
         cv = FactorAllTerms(cv0)
         i = 0
-        while cv != cv0 and i < maxIters:
+        while cv != cv0:
             cv0 = [j.Copy() for j in cv]
             cv = FactorAllTerms(cv)
             i += 1
@@ -1041,10 +1061,8 @@ class TriangulationDiagram(TensorDiagram):
 
         # Reality check: Theorem 7.1 asserts there is exactly 2n-8 cluster variables
         assert len(clustervars) == 2 * (self.a + self.b) - 8
-        clusterVariables = []
-        [clusterVariables.append(ClusterVariable(x, cluster = True)) for x in clustervars]
-        frozenVariables = []
-        [frozenVariables.append(ClusterVariable(x, cluster = False)) for x in frozen]
+        clusterVariables = [ClusterVariable(x, cluster = True) for x in clustervars]
+        frozenVariables = [ClusterVariable(x, cluster = False) for x in frozen]
 
         # Print information so far
         if verbose:
@@ -1053,31 +1071,35 @@ class TriangulationDiagram(TensorDiagram):
             print("Frozen Variables = ", end = " ")
             print(*frozen)
 
-        # Consider exchange relations
+        # Consider exchange relations. Check if diagonal ab is actually an edge
+        def isEdge(a, b):
+            return a == (b + 1) % self.l or b == (a + 1) % self.l
+        
+        # Add exchange relations to the big bag
         def AddRelation(relations: list, tri: Triangulation, original):
+            # Handles equation 6.1
             for t in tri.trigs:
                 p, q, r = t
-                if q == (p + 1) % self.l or r == (q + 1) % self.l: continue
+                if isEdge(p, q) or isEdge(q, r): continue
                 # Skein relation 6.1
                 rel61 = self.Skein(SkeinRelation([self.J2(*t), self.J3(*t)], [self.J1(p, r), self.J1(r, q), self.J1(q, p)] ,[self.J1(p, q), self.J1(q, r), self.J1(r, p)], signature = "from 6.1 with t = " + str(t), original = original), verbose = veryVerbose)
                 if not rel61.isZero: relations.append(rel61)
-
+            
             for c in tri.extended_four_cycles:
                 p, q, r, s = c
                 # Skein relation 6.2 - 6.5
                 rel62 = self.Skein(SkeinRelation([self.J1(r, p), self.J2(q, r, s)], [self.J1(r, q), self.J2(p, r, s)], [self.J1(r, s), self.J2(q, r, p)], signature = "from 6.2" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
-                if not rel62.isZero: 
-                    relations.append(rel62)
+                if not rel62.isZero: relations.append(rel62)
                 
                 # Check for one exposed edge. pr must be a diagonal so no need to check that
-                if q == (p + 1) % self.l or r == (q + 1) % self.l:
+                if isEdge(p, q) or isEdge(q, r):
                     rel64 = self.Skein(SkeinRelation([self.J1(r, p), self.J4(p, q, r, s)], [self.J1(q, p), self.J1(p, r), self.J1(r, s)], [self.J2(p, r, s), self.J3(q, r, p)], signature = "from 6.4" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
                     rel65 = self.Skein(SkeinRelation([self.J1(p, r), self.J4(q, r, s, p)], [self.J1(q, r), self.J1(p, s), self.J1(r, p)], [self.J2(p, r, s), self.J3(q, r, p)], signature = "from 6.5" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
                     if not rel64.isZero: relations.append(rel64)
                     if not rel65.isZero: relations.append(rel65)
 
                 # Check for two exposed edge
-                if q == (p + 1) % self.l and r == (q + 1) % self.l:
+                if isEdge(p, q) and isEdge(q, r):
                     rel63 = SkeinRelation([], [], [])
                     if self.color(p, True) == w and self.color(p + 1, True) == b:
                         rel63 = self.Skein(SkeinRelation([self.J1(p, p+2), self.J1(s, p+1)], [self.J1(p, p+1), self.J1(s, p+2)], [self.J1(s, p)], signature = "from 6.3w" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
@@ -1106,6 +1128,7 @@ class TriangulationDiagram(TensorDiagram):
 
                     relations = AddRelation(relations, Triangulation(self.l, triangulation), original = False)
 
+        # Print current progress
         if verbose:
             print("\n\n Now process the Exchange relations \n\n")
         
@@ -1123,11 +1146,13 @@ class TriangulationDiagram(TensorDiagram):
             if not Contains(clustervars, relation.equation[0]): continue
             addedRels.append(relation)
 
+        # Print progress after first pass
         if verbose:
             print("First pass:" + str(len(addedRels)) + " left")
             print(*addedRels, sep = "\n")
             print("\n\n")
 
+        # Do second pass: filter out all the from-to swapped duplicates. One of them is not original
         addedRels2 = addedRels
         if len(addedRels) < len(clustervars):
             print(*addedRels)
@@ -1143,100 +1168,120 @@ class TriangulationDiagram(TensorDiagram):
                 if Contains(addedRels, dualRelation):
                     if relation.original: addedRels2.append(relation)
                     elif dualRelation.original: addedRels2.append(dualRelation)
-                    else: 
-                        raise AssertionError("Both relations are unoriginal!")
+                    else: raise AssertionError("Both relations are unoriginal!")
                 else: 
                     addedRels2.append(relation)
-        
         if len(addedRels2) != len(clustervars):
             print(*addedRels2, sep = "\n")
             raise AssertionError("There are a wrong number of exchange relations!")
-        
-        ### We need a way to sort the skein relations since some of them are flipped over and we don't know which one they are
-        def findVarIn(variable: J, in_list: list, in_list2: list = []):
-            for g in in_list:
-                if g.j == variable:
-                    return g
-            for g in in_list2:
-                if g.j == variable:
-                    return g                
-            raise AssertionError("in_list does not contain the variable " + str(variable))
-        
-        # Check in the equation of the given exchange relation and see if v is simultaneously in the given relation's from terms and to terms
-        def CheckSwap(relation: SkeinRelation, var: ClusterVariable):
-            for v in relation.to.equation:
-                if Contains(var.fromTerms, v):
-                    return True
-            for v in relation.fr.equation:
-                if Contains(var.toTerms, v):
-                    return True
-            return False
-
         if verbose:
             print(*addedRels2, sep = "\n")
             print("\n\n\n\n\n")
-
-        # This part handles the swapping of the exchange relation terms
-        for relation in addedRels2:
-            # Find the variable, check compatibility with the other equations
-            var = findVarIn(relation.ex.equation[0], clusterVariables)
-
-            # If it is not compatible, then swap the from terms and to terms
-            # Check that after swapping it is compatible
-            if CheckSwap(relation, var):
-                relation.swap()
-                if CheckSwap(relation, var):
-                    raise AssertionError("The relation is not compatible with other equations!")
-            
-            for v in relation.to.equation:
-                # Add the variable to itself
-                var.toTerms.append(v)
-
-                # Find the other variable (that the arrow is pointing from) and add that into their from terms
-                var2 = findVarIn(v, clusterVariables, frozenVariables)
-                var2.fromTerms.append(relation.ex.equation[0])
-            
-            # Do the same for the from_cv terms
-            for v in relation.fr.equation:
-                var.fromTerms.append(v)
-                var2 = findVarIn(v, clusterVariables, frozenVariables)
-                var2.toTerms.append(relation.ex.equation[0])
         
-        # We just remove every second copy of things in cluster variable from and to terms
-        # Since all the cluster variables are effectively counted twice in the above process
-        for cv in clusterVariables:
-            added_terms = []
-            new_from = []
-            new_to = []
-            for j in cv.fromTerms:
-                # Search in added terms and see if it contains the j we are about to add
-                contain_ind = []
-                for i in range(len(added_terms)): 
-                    if added_terms[i] == j: contain_ind.append(i)
-                
-                # Make sure we havent let anything slip through
-                assert len(contain_ind) <= 1 and len(contain_ind) >= 0
-                # If added_terms contain the j, then we wont add it but we simultaneously remove it from the added terms
-                if len(contain_ind) == 1: j2 = added_terms.pop(contain_ind[0])
-                else:
-                    new_from.append(j)
-                    added_terms.append(j)
-            cv.fromTerms = new_from
+        # Do third pass: some exchange relations might be opposite sides so we need to swap the ones whereever necessary.
+        # Create a buffer B (queue) to store exchage relations since some of the "arbitrary choices" we make might softlock us later. Free will is a lie
+        # Fix the first one by going through all cluster variables and frozen vars
+        # Create a list L of processed exchange relation and add the first one in
+        # Add all other equations into B
+        # Make a counter = 0 to see if the buffer went through one full cycle then that means 
+        # while B is not empty:
+        #   Get the first equation and see if it can only be one of the orientations
+        #   if yes, (swap it and) add it to L; also reset counter to len(B)
+        #   otherwise add it back to B and counter -= 1
+        #   if counter == 0:
+        #       We need to make an arbitrary choice. So we fix the first one from the list.
 
-            added_terms = []
-            for j in cv.toTerms:
-                contain_ind = []
-                for i in range(len(added_terms)): 
-                    if added_terms[i] == j: contain_ind.append(i)
-                assert len(contain_ind) <= 1 and len(contain_ind) >= 0
-                if len(contain_ind) == 1: j2 = added_terms.pop(contain_ind[0])
-                else:
-                    new_to.append(j)
-                    added_terms.append(j)
-            cv.toTerms = new_to
+        # Cleans up the cluster variable for you
+        # This passed sanity check
+        def FlushCV():
+            for cv in clusterVariables:
+                to, fr = [], []
+                [to.append(x) for x in cv.toTerms if x not in to]
+                [fr.append(x) for x in cv.fromTerms if x not in fr]
+                cv.toTerms, cv.fromTerms = to, fr
+
+        # Grabs the cluster variable from the list of generated cluster variables. Raises an error otherwise
+        # This passed sanity check
+        def GetClusterVar(var: J):
+            filter = [x for x in clusterVariables if x.j == var] + [x for x in frozenVariables if x.j == var]
+            assert len(filter) == 1
+            return filter[0]
+        
+        # Fixes the arrows incident to a cluster variable in the quiver by "registering" th arrows to the quiver
+        # This passed sanity check
+        def Fix(relation: SkeinRelation):
+            if verbose: print("Fixing the equation " + str(relation))
+            x = GetClusterVar(relation.ex[0])
+            x.toTerms += [GetClusterVar(a) for a in relation.to]
+            x.fromTerms += [GetClusterVar(a) for a in relation.fr]
+            # Handle from terms and to tems
+            for term in relation.fr:
+                y = GetClusterVar(term)
+                y.toTerms += [x]
+            for term in relation.to:
+                y = GetClusterVar(term)
+                y.fromTerms += [x]
+            FlushCV()
+        
+        # Check if a term is compatible with the equation
+        def CheckTerm(equation: SkeinRelation, x: ClusterVariable):
+            exitEarly = False
+            # For an equation to be compatible, the exchange term needs to have its from (to) terms correctly placed
+            # i.e. If A is supposed to be a toTerm in x, then x cannot be a to term in A
+            # If it did not exit early that means the equation passed all the tests as is. That's fantastic!
+            for toTerm in equation.to:
+                if exitEarly: break
+                A = GetClusterVar(toTerm)
+                filter = [y for y in A.toTerms if x == y]
+                assert len(filter) == 0 or len(filter) == 1
+                if len(filter) == 1: 
+                    exitEarly = True
+            for fromTerm in equation.fr:
+                if exitEarly: break
+                A = GetClusterVar(fromTerm)
+                filter = [y for y in A.fromTerms if x == y]
+                assert len(filter) == 0 or len(filter) == 1
+                if len(filter) == 1: 
+                    exitEarly = True
+            return not exitEarly
+
+        # Check if this equation is fixed under the rest of the equation. If yes, then return True. If yes after swapped, 
+        # then it swaps it for you and returns True. Otherwise return False
+        def isFixed(equation: SkeinRelation):
+            x = GetClusterVar(equation.ex[0])
+            orig = CheckTerm(equation, x)
+            equation.swap()
+            swap = CheckTerm(equation, x)
+            equation.swap()
+            # If both sides are ok then its not fixed
+            if orig == swap: return False
+            if orig: return True
+            equation.swap()
+            return True
+
+        buffer = [addedRels2[i] for i in range(1, len(addedRels2))]
+        processed_relations = [addedRels2[0]]
+        counter = len(buffer)
+        Fix(addedRels2[0])
+        while len(buffer) > 0:
+            if verbose: print("Third phase: buffer length is now" + str(len(buffer)))
+            eqn = buffer.pop(0)
+            if isFixed(eqn):
+                Fix(eqn)
+                processed_relations += [eqn]
+                counter = len(buffer)
+            else:
+                buffer += [eqn]
+                counter -= 1
+            if counter == 0 and len(buffer) > 0:
+                eqn = buffer.pop(0)
+                Fix(eqn)
+                processed_relations += [eqn]
+
+        assert len(processed_relations) == len(clusterVariables)
 
         # Might as well also generate the exchange matrix
-        self.cluster = ClusterAlgebra(clusterVariables, frozenVariables, addedRels2)
+        self.cluster = ClusterAlgebra(clusterVariables, frozenVariables, processed_relations)
         self.clusterVariables = clustervars
         self.frozenVariables = frozen
         self.generated = True
