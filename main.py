@@ -2,7 +2,6 @@ from re import L
 import numpy as np
 from tensordiagram import *
 from loopseeker import search
-import loopseeker as ls
 import time
 
 def save_result(st):
@@ -12,17 +11,44 @@ def save_result(st):
         
 b = "black"
 w = "white"
+qmu_path = "./quiver/batch2/"
 
-for n in range(12, 15):
+for n in range(7, 15):
     print("Searching n = ", n)
+
+    # Grassmannian
     gr = TriangulationDiagram([b for _ in range(n)])
-    pgr = TriangulationDiagram([b for _ in range(n - 3)] + [w, w, w])
     gr.GenerateCluster()
+
+    # PGrassmannian
+    pgr = TriangulationDiagram([w, w, w] + [b for _ in range(n - 3)] )
     pgr.GenerateCluster()
+
     # Create a copy, just to be safe
     B_gr = np.array(gr.cluster.exchange_matrix, dtype = int)
     B_pgr = np.array(pgr.cluster.exchange_matrix, dtype = int)
-    mut_seq, relabelling = search(B_pgr, B_gr, 8, try_first=[[4, 2, 1, 5, 7, 8]])
+
+    # Save both qmu files
+    GetQMU(B_gr, qmu_path + "gm" + str(n), save_file = True)
+    GetQMU(B_pgr, qmu_path + "pgm" + str(n), save_file = True)
+
+for n in range(7, 12):
+    print("Searching n = ", n)
+
+    # Grassmannian
+    gr = TriangulationDiagram([b for _ in range(n)])
+    gr.GenerateCluster()
+
+    # PGrassmannian
+    pgr = TriangulationDiagram([w, w, w] + [b for _ in range(n - 3)] )
+    pgr.GenerateCluster()
+
+    # Create a copy, just to be safe
+    B_gr = np.array(gr.cluster.exchange_matrix, dtype = int)
+    B_pgr = np.array(pgr.cluster.exchange_matrix, dtype = int)
+
+    # Find the shortest path
+    mut_seq, relabelling = search(B_pgr, B_gr, 8)
     B_mut_pgr = Mutate(B_pgr, mut_seq)
     B_mut_pgr = B_mut_pgr[relabelling]
     B_mut_pgr = B_mut_pgr[:, relabelling]

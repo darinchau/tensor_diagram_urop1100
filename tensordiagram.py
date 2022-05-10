@@ -160,6 +160,9 @@ class J:
         if self.t == 4:
             return f"J({self.top}, {self.bottom})" 
         return "NOT AN INVARIANT"
+    
+    def Copy(self):
+        return J(self.top, self.bottom)
 
 # Product of J invariants
 class InvariantTerm:
@@ -268,6 +271,10 @@ class TensorNode:
         self.color = color
         self.coordinates = coordinates
         self.id = id
+        self.force = np.array([0,0], dtype = np.float64)
+        self.boundaryDistance = 0
+        self.explored = False
+        self.parent = None
 
     def __str__(self):
         st = "Boundary " if self.isBoundary else "Internal "
@@ -294,24 +301,15 @@ class TensorNode:
         assert type(self) == type(node)
         TensorNode.__append__(self, node, ignore_full_connection)
         TensorNode.__append__(node, self, ignore_full_connection)
-
-    def coordinate(self, precision = 5):
-        return (round(self.coordinates[0], precision) , round(self.coordinates[1], precision))
-
-# A node on a tensor diagram with extra properties for graph optimization purposes
-class GraphNode(TensorNode):
-    def __init__(self, id = 0, isBoundary = False, color = b, connected = [-1, -1, -1], coordinates = np.array([0,0], dtype = np.float64)):
-        super().__init__(id, isBoundary, color, connected, coordinates)
-        self.force = np.array([0,0], dtype = np.float64)
-        self.boundaryDistance = 0
-        self.explored = False
-        self.parent = None
-
+    
     def Reset(self):
         self.force = np.array([0,0], dtype = np.float64)
         self.explored = False
         self.parent = None
         self.boundaryDistance = 0
+
+    def coordinate(self, precision = 5):
+        return (round(self.coordinates[0], precision) , round(self.coordinates[1], precision))
 
 # A type a, b tensor
 class TensorDiagram:
@@ -333,7 +331,7 @@ class TensorDiagram:
         self.nodes = []
         for i in range(self.l):
             # We want to construct the nodes clockwise from the top
-            self.AddNode(signature[i], coordinates =    Circle(1, 2 * plotOffsetAngle + i / self.l), isBoundary = True)
+            self.AddNode(signature[i], coordinates = Circle(1, 2 * plotOffsetAngle + i / self.l), isBoundary = True)
         
         # Used for printing
         self.scale = 3
@@ -383,7 +381,7 @@ class TensorDiagram:
     # Returns the new node
     def AddNode(self, color: str, isBoundary = False, connected = [-1, -1, -1], coordinates = (0,0)):
         id = self.GetNextNodeID()
-        node = GraphNode(id, isBoundary, color, connected, coordinates)
+        node = TensorNode(id, isBoundary, color, connected, coordinates)
         self.nodes.append(node)
         return id, node
 
@@ -622,7 +620,7 @@ class TensorDiagram:
 
         
     # Run a BFS algorithm to get the distance to boundary for each node
-    def __GetClosestBoundary__(self, root: GraphNode):
+    def __GetClosestBoundary__(self, root: TensorNode):
             q = [root]
             root.explored = True
             while len(q) > 0:
@@ -865,8 +863,8 @@ class Triangulation:
     def __str__(self):
         return str(self.diagonals)
 
-# A J-invariant which also holds information about the cluster it comes from
-class Generator(J):
+# A J-invariant which also holds information about the cluster, in particular who is pointing to it and away from it in its cluster
+class ClusterVariable(J):
     def __init__(self, copy: J, cluster: bool = False):
         super().__init__(copy.top, copy.bottom)
         self.j = copy
@@ -889,7 +887,7 @@ class Generator(J):
         self.toTerms = []
 
 # Generate the QMU file from exchange matrix
-def GetQMU(B_matrix : np.ndarray, fileName, download = True):
+def GetQMU(B_matrix : np.ndarray, fileName, save_file = True):
     assert B_matrix.shape[0] == B_matrix.shape[1]
     num_vertices = B_matrix.shape[0]
     st = "//Number of points\n"
@@ -907,7 +905,7 @@ def GetQMU(B_matrix : np.ndarray, fileName, download = True):
         coord = Circle(420, i/num_vertices)
         st += "9 {} {} \n".format(round(coord[0], 1), round(coord[1], 1))
     st += "//Cluster is null\n//Historycounter\n-1\n//History"
-    if not download: return st
+    if not save_file: return st
 
     fn = '{}.qmu'.format(fileName)
     with open(fn, 'w') as f:
@@ -1033,7 +1031,7 @@ class TriangulationDiagram(TensorDiagram):
         cv = FactorAllTerms(cv0)
         i = 0
         while cv != cv0 and i < maxIters:
-            clustervar = cv
+            cv0 = [j.Copy() for j in cv]
             cv = FactorAllTerms(cv)
             i += 1
         
@@ -1042,20 +1040,20 @@ class TriangulationDiagram(TensorDiagram):
         [clustervars.append(x) for x in cv if (x not in clustervars) and (x not in frozen)]
 
         # Reality check: Theorem 7.1 asserts there is exactly 2n-8 cluster variables
-        if len(clustervars) < 2 * (self.a + self.b) - 8: raise AssertionError("Something has gone wrong somewhere in the algorithm! Not enough cluster variables")
-        if len(clustervars) > 2 * (self.a + self.b) - 8: print("***Warning***: Manual attention required. Some cluster variables are probably repeats")
+        assert len(clustervars) == 2 * (self.a + self.b) - 8
         clusterVariables = []
-        [clusterVariables.append(Generator(x, cluster = True)) for x in clustervars]
+        [clusterVariables.append(ClusterVariable(x, cluster = True)) for x in clustervars]
         frozenVariables = []
-        [frozenVariables.append(Generator(x, cluster = False)) for x in frozen]
+        [frozenVariables.append(ClusterVariable(x, cluster = False)) for x in frozen]
 
+        # Print information so far
         if verbose:
             print("Cluster Variables = ", end = " ")
             print(*clustervars)
             print("Frozen Variables = ", end = " ")
             print(*frozen)
 
-
+        # Consider exchange relations
         def AddRelation(relations: list, tri: Triangulation, original):
             for t in tri.trigs:
                 p, q, r = t
@@ -1165,7 +1163,7 @@ class TriangulationDiagram(TensorDiagram):
             raise AssertionError("in_list does not contain the variable " + str(variable))
         
         # Check in the equation of the given exchange relation and see if v is simultaneously in the given relation's from terms and to terms
-        def CheckSwap(relation: SkeinRelation, var: Generator):
+        def CheckSwap(relation: SkeinRelation, var: ClusterVariable):
             for v in relation.to.equation:
                 if Contains(var.fromTerms, v):
                     return True
