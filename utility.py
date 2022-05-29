@@ -1,6 +1,6 @@
 # Utility stuff
 lpl = 0
-def fprint(fr, total_fr, description, print_every = 6):
+def fprint(fr, total_fr, description, print_every = 8):
 		global lpl
 		len_bar = 24
 		ratio = round((fr + 1)/total_fr * len_bar)

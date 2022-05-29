@@ -585,56 +585,6 @@ class TensorDiagram:
             nodew.connect(self.AddSpecialInvariant(inv.bottom[1], w))
             nodeb.connect(nodew)
 
-    # Process Skein equation
-    def Skein(self, skein: SkeinRelation, verbose = False):
-        if verbose: print("\n=================================================================================\nUnprocessed equation: " + skein.Export(mode = "python"))
-        fr = self.Factor(skein.fr, True, verbose = verbose)
-        to = self.Factor(skein.to, True, verbose = verbose)
-        ex = self.Factor(skein.ex, True, verbose = verbose)
-
-        # That means all 3 terms might have some common invariant that we need to factor out and remove
-        extra_ex = []
-        for j in ex:
-            extra_ex.append(J(j.top, j.bottom))
-        
-        for j in extra_ex:
-            if (Contains(fr, j) or fr.isZero) and (Contains(fr, j) or to.isZero):
-                if verbose:
-                    print("Removing term " + str(j) + " for: \t", end = "")
-                    print(ex, fr, to)
-                ex.replace(j, [], verbose, "factor common terms")
-                fr.replace(j, [])
-                to.replace(j, [])
-
-        try:
-            if fr.isZero:
-                assert to == ex
-                return SkeinRelation([], [], [])
-        
-            if to.isZero:
-                assert fr == ex
-                return SkeinRelation([], [], [])
-
-            if ex.isZero:
-                assert fr.isZero and to.isZero
-                return SkeinRelation([], [], [])
-
-            assert len(ex.equation) == 2
-        except:
-            print("\n\n Error!")
-            print(skein)
-            print()
-            print(ex, to, fr)
-            raise AssertionError("Terms did not factor nicely please check the code")
-        
-        eq = SkeinRelation(ex.equation, to.equation, fr.equation, skein.signature)
-
-        if verbose: 
-            print("Processed equation: ", end = "")
-            print(eq.Export(mode = "python"))
-            print("\n\n")
-        return eq
-
     #################################### Helper functions for printing the diagram ####################################
 
     #Reset All nodes
@@ -905,12 +855,9 @@ class ClusterVariable(J):
     def reset(self):
         self.fromTerms = []
         self.toTerms = []
-    
-    def __eq__(self, J2):
-        return super().__eq__(J2)
 
 # Generate the QMU file from exchange matrix
-def GetQMU(B_matrix : np.ndarray, fileName, save_file = True):
+def GetQMU(B_matrix : np.ndarray, fileName: str, num_frozen_vertices: int, save_file = True):
     assert B_matrix.shape[0] == B_matrix.shape[1]
     num_vertices = B_matrix.shape[0]
     st = "//Number of points\n"
@@ -926,7 +873,7 @@ def GetQMU(B_matrix : np.ndarray, fileName, save_file = True):
     st += "//Points\n"
     for i in range(num_vertices):
         coord = Circle(420, i/num_vertices)
-        st += "9 {} {} \n".format(round(coord[0], 1), round(coord[1], 1))
+        st += "9 {} {} {}\n".format(round(coord[0], 1), round(coord[1], 1), 0 if i < num_vertices - num_frozen_vertices else 1)
     st += "//Cluster is null\n//Historycounter\n-1\n//History"
     if not save_file: return st
 
@@ -939,41 +886,31 @@ def GetQMU(B_matrix : np.ndarray, fileName, save_file = True):
 class ClusterAlgebra:
     # Constructor is called by giving the initial seed
     def __init__(self, cluster_variables: list, frozen_variables: list, exchange_relations: list):
-        # Rank of cluster algebra
+        # Rank of cluster algebra, and m = cv + fv
         self.rank = len(cluster_variables)
-        m = self.rank + len(frozen_variables)
+        r = self.rank
+        m = r + len(frozen_variables)
 
-        # A list of generators for cluster, frozen and exchange relations
-        self.clusterVariables = []
-
-        # Enumerate objects have (index, object)
-        for t in enumerate(cluster_variables):
-            self.clusterVariables.append(t)
+        self.extended_cluster = list(enumerate(cluster_variables + frozen_variables))
+        B = np.zeros((m, m), dtype = int)
+        for i in range(m):
+            for j in range(i):
+                x = self.extended_cluster[i][1]
+                y = self.extended_cluster[j][1]
+                num_from, num_to = 0, 0
+                for xFrom in x.fromTerms:
+                    if xFrom.j == y.j:
+                        # This implies theres an arrow x from y
+                        num_from = 1
+                for xTo in x.toTerms:
+                    if xTo.j == y.j:
+                        num_to = 1
+                B[i, j] = num_to - num_from
+                B[j, i] = num_from - num_to
         
-        self.frozenVariables = []
-        for t in zip(range(self.rank, m), frozen_variables):
-            self.frozenVariables.append(t)
-        
+        self.full_exchange_matrix = B
+        self.exchange_matrix = B[:r, :r]
         self.exchangeRelations = exchange_relations
-
-        # Generate the (extended) exchange matrix
-        B_matrix = np.zeros((m, m), dtype = int)
-        for j, cv in self.clusterVariables + self.frozenVariables:
-            # Loop through every row now :)
-            for i, other in self.clusterVariables + self.frozenVariables:
-                if cv.j == other.j: continue
-                num_arrows_from_cv, num_arrows_to_cv = 0, 0
-                # Loop through all the from terms in cluster variable and add the entry
-                # cv, other are Generators but stuff in fromTerms are not
-                for variable in cv.fromTerms:
-                    if variable == other.j: num_arrows_from_cv += 1
-                for variable in cv.toTerms:
-                    if variable == other.j: num_arrows_to_cv += 1                
-                B_matrix[i, j] = num_arrows_from_cv - num_arrows_to_cv
-        
-        self.full_exchange_matrix = B_matrix
-        self.extended_exchange_matrix = B_matrix[:, :self.rank]
-        self.exchange_matrix = B_matrix[: self.rank, :self.rank]
 
 # Define mutations. We cheat by defining different behaviour for this function depending if we feed it a list or an integer
 def Mutate(matrix, k):
@@ -1005,8 +942,10 @@ class TriangulationDiagram(TensorDiagram):
         assert self.l == triangulation.l
         self.triangulation = triangulation
 
-    def PlotTriangulation(self):
+    def PlotTriangulation(self, shift = (0,0), scale = 1):
         newDiagram = TriangulationDiagram(self.signature)
+        newDiagram.shift = shift
+        newDiagram.scale = scale
         newDiagram.Triangulate(self.triangulation)
         for edge in newDiagram.triangulation.edges:
             node1 = newDiagram.GetNodeFromID(edge[0], True)
@@ -1017,22 +956,6 @@ class TriangulationDiagram(TensorDiagram):
     # Write down all cluster variables
     def GenerateCluster(self, verbose = False, veryVerbose = False):
         if veryVerbose: verbose = True
-
-        # Frozen Variables
-        frozen = []
-        for i in range(self.l):
-            if self.color(i) == b:
-                frozen.append(self.J1(i + 1, i))
-            if self.color(i) == w:
-                frozen.append(self.J1(i, i + 1))
-
-        # Cluster Variables
-        cv0, relations = [], []
-        for edge in self.triangulation.extendedEdges:
-            cv0.append(self.J1(*edge))
-
-        for t in self.triangulation.trigs:
-            cv0.append(self.J2(*t))
 
         # Helper function to factor all terms in a cluster variable
         def FactorAllTerms(cv):
@@ -1047,152 +970,7 @@ class TriangulationDiagram(TensorDiagram):
                 [res.append(x) for x in cv2 if x not in res]
             return cv2
 
-        # Now factor everything 
-        cv = FactorAllTerms(cv0)
-        i = 0
-        while cv != cv0:
-            cv0 = [j.Copy() for j in cv]
-            cv = FactorAllTerms(cv)
-            i += 1
-        
-        # Remove duplicates
-        clustervars = []
-        [clustervars.append(x) for x in cv if (x not in clustervars) and (x not in frozen)]
-
-        # Reality check: Theorem 7.1 asserts there is exactly 2n-8 cluster variables
-        assert len(clustervars) == 2 * (self.a + self.b) - 8
-        clusterVariables = [ClusterVariable(x, cluster = True) for x in clustervars]
-        frozenVariables = [ClusterVariable(x, cluster = False) for x in frozen]
-
-        # Print information so far
-        if verbose:
-            print("Cluster Variables = ", end = " ")
-            print(*clustervars)
-            print("Frozen Variables = ", end = " ")
-            print(*frozen)
-
-        # Consider exchange relations. Check if diagonal ab is actually an edge
-        def isEdge(a, b):
-            return a == (b + 1) % self.l or b == (a + 1) % self.l
-        
-        # Add exchange relations to the big bag
-        def AddRelation(relations: list, tri: Triangulation, original):
-            # Handles equation 6.1
-            for t in tri.trigs:
-                p, q, r = t
-                if isEdge(p, q) or isEdge(q, r): continue
-                # Skein relation 6.1
-                rel61 = self.Skein(SkeinRelation([self.J2(*t), self.J3(*t)], [self.J1(p, r), self.J1(r, q), self.J1(q, p)] ,[self.J1(p, q), self.J1(q, r), self.J1(r, p)], signature = "from 6.1 with t = " + str(t), original = original), verbose = veryVerbose)
-                if not rel61.isZero: relations.append(rel61)
-            
-            for c in tri.extended_four_cycles:
-                p, q, r, s = c
-                # Skein relation 6.2 - 6.5
-                rel62 = self.Skein(SkeinRelation([self.J1(r, p), self.J2(q, r, s)], [self.J1(r, q), self.J2(p, r, s)], [self.J1(r, s), self.J2(q, r, p)], signature = "from 6.2" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
-                if not rel62.isZero: relations.append(rel62)
-                
-                # Check for one exposed edge. pr must be a diagonal so no need to check that
-                if isEdge(p, q) or isEdge(q, r):
-                    rel64 = self.Skein(SkeinRelation([self.J1(r, p), self.J4(p, q, r, s)], [self.J1(q, p), self.J1(p, r), self.J1(r, s)], [self.J2(p, r, s), self.J3(q, r, p)], signature = "from 6.4" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
-                    rel65 = self.Skein(SkeinRelation([self.J1(p, r), self.J4(q, r, s, p)], [self.J1(q, r), self.J1(p, s), self.J1(r, p)], [self.J2(p, r, s), self.J3(q, r, p)], signature = "from 6.5" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
-                    if not rel64.isZero: relations.append(rel64)
-                    if not rel65.isZero: relations.append(rel65)
-
-                # Check for two exposed edge
-                if isEdge(p, q) and isEdge(q, r):
-                    rel63 = SkeinRelation([], [], [])
-                    if self.color(p, True) == w and self.color(p + 1, True) == b:
-                        rel63 = self.Skein(SkeinRelation([self.J1(p, p+2), self.J1(s, p+1)], [self.J1(p, p+1), self.J1(s, p+2)], [self.J1(s, p)], signature = "from 6.3w" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
-                    if self.color(p, True) == b and self.color(p + 1, True) == w:
-                        rel63 = self.Skein(SkeinRelation([self.J1(p + 2, p), self.J1(p+1, s)], [self.J1(p+1, p), self.J1(p+2, s)], [self.J1(p, s)], signature = "from 6.3b" + " with p, q, r, s = " + str((p, q, r, s)), original = original), verbose = veryVerbose)
-                    if not rel63.isZero: relations.append(rel63)
-            return relations
-        
-        addedRels = []
-        processed_triangulations = []
-        relations = AddRelation(relations, self.triangulation, original = True)
-        processed_triangulations.append(sorted(self.triangulation.diagonals))
-
-        # We use an additional list to keep track of which triangulation have we considered, so to not do duplicates. Repeatedly factorizing stuff turns out to be very expensive
-        for i in range(self.l):
-            p, q, r, s = i, (i + 1) % self.l, (i + 2) % self.l, (i + 3) % self.l
-            fil1 = [a for a in self.triangulation.diagonals if set(a) == set((p,s))]
-            if len(fil1) > 0:
-                # For loops are expensive, we check if their colors alternate first
-                cols = (self.color(p), self.color(q), self.color(r))
-                if cols == (b, w, b) or cols == (w,b,w):
-                    # Find the element that cooresponds to the triangulation of this quadrilateral and then swap the diagonals
-                    triangulation = [(q, s) if set(a) == set((p,r)) else (p, r) if set(a) == set((q,s)) else a for a in self.triangulation.diagonals]
-                    if Contains(processed_triangulations, triangulation): continue
-                    processed_triangulations.append(sorted(triangulation))
-
-                    relations = AddRelation(relations, Triangulation(self.l, triangulation), original = False)
-
-        # Print current progress
-        if verbose:
-            print("\n\n Now process the Exchange relations \n\n")
-        
-            print("Triangulations:")
-            print(*processed_triangulations, sep = "\n")
-
-            print("Pre pass:" + str(len(relations)) + " left")
-            print(*relations, sep = "\n")
-            print("\n\n")
-
-        # Now filter
-        # First pass: filter out all duplicates and everything that is not a valid relation
-        for relation in relations:
-            if Contains(addedRels, relation): continue
-            if not Contains(clustervars, relation.equation[0]): continue
-            addedRels.append(relation)
-
-        # Print progress after first pass
-        if verbose:
-            print("First pass:" + str(len(addedRels)) + " left")
-            print(*addedRels, sep = "\n")
-            print("\n\n")
-
-        # Do second pass: filter out all the from-to swapped duplicates. One of them is not original
-        addedRels2 = addedRels
-        if len(addedRels) < len(clustervars):
-            print(*addedRels)
-            raise AssertionError("Too few added relations!")
-        elif len(addedRels) > len(clustervars):
-            # Second pass: filter out all the from-to swapped duplicates. One of them is not original
-            addedRels2 = []
-            for relation in addedRels:
-                dualRelation = SkeinRelation(relation.ex.equation, relation.fr.equation, relation.to.equation, relation.signature, relation.original)
-                if Contains(addedRels2, relation) or Contains(addedRels2, dualRelation): continue
-
-                # If the list after first pass contains both, then add the one that is original, otherwise just add it
-                if Contains(addedRels, dualRelation):
-                    if relation.original: addedRels2.append(relation)
-                    elif dualRelation.original: addedRels2.append(dualRelation)
-                    else: raise AssertionError("Both relations are unoriginal!")
-                else: 
-                    addedRels2.append(relation)
-        if len(addedRels2) != len(clustervars):
-            print(*addedRels2, sep = "\n")
-            raise AssertionError("There are a wrong number of exchange relations!")
-        if verbose:
-            print(*addedRels2, sep = "\n")
-            print("\n\n\n\n\n")
-        
-        # Do third pass: some exchange relations might be opposite sides so we need to swap the ones whereever necessary.
-        # Create a buffer B (queue) to store exchage relations since some of the "arbitrary choices" we make might softlock us later. Free will is a lie
-        # Fix the first one by going through all cluster variables and frozen vars
-        # Create a list L of processed exchange relation and add the first one in
-        # Add all other equations into B
-        # Make a counter = 0 to see if the buffer went through one full cycle then that means 
-        # while B is not empty:
-        #   Get the first equation and see if it can only be one of the orientations
-        #   if yes, (swap it and) add it to L; also reset counter to len(B)
-        #   otherwise add it back to B and counter -= 1
-        #   if counter == 0:
-        #       We need to make an arbitrary choice. So we fix the first one from the list.
-
         # Cleans up the cluster variable for you
-        # This passed sanity check
         def FlushCV():
             for cv in clusterVariables:
                 to, fr = [], []
@@ -1201,14 +979,12 @@ class TriangulationDiagram(TensorDiagram):
                 cv.toTerms, cv.fromTerms = to, fr
 
         # Grabs the cluster variable from the list of generated cluster variables. Raises an error otherwise
-        # This passed sanity check
         def GetClusterVar(var: J):
             filter = [x for x in clusterVariables if x.j == var] + [x for x in frozenVariables if x.j == var]
             assert len(filter) == 1
             return filter[0]
         
         # Fixes the arrows incident to a cluster variable in the quiver by "registering" th arrows to the quiver
-        # This passed sanity check
         def Fix(relation: SkeinRelation):
             if verbose: print("Fixing the equation " + str(relation))
             x = GetClusterVar(relation.ex[0])
@@ -1258,6 +1034,240 @@ class TriangulationDiagram(TensorDiagram):
             if orig: return True
             equation.swap()
             return True
+        
+        # Consider exchange relations. Check if diagonal ab is actually an edge
+        def isEdge(a, b):
+            return a == (b + 1) % self.l or b == (a + 1) % self.l
+
+        def checkIsAllClusterVariables(term: InvariantTerm):
+            for t in term:
+                filter = [x for x in clusterVariables + frozenVariables if x.j == t]
+                if len(filter) == 0:
+                    return False
+            return True
+        
+        # Frozen Variables
+        frozen = []
+        for i in range(self.l):
+            if self.color(i) == b:
+                frozen.append(self.J1(i + 1, i))
+            if self.color(i) == w:
+                frozen.append(self.J1(i, i + 1))
+
+        # Cluster Variables
+        cv0 = []
+        for edge in self.triangulation.extendedEdges:
+            cv0.append(self.J1(*edge))
+        for t in self.triangulation.trigs:
+            cv0.append(self.J2(*t))
+
+        # Now factor everything 
+        cv = FactorAllTerms(cv0)
+        i = 0
+        while cv != cv0:
+            cv0 = [j.Copy() for j in cv]
+            cv = FactorAllTerms(cv)
+            i += 1
+        
+        # Remove duplicates
+        clustervars = []
+        [clustervars.append(x) for x in cv if (x not in clustervars) and (x not in frozen)]
+
+        # Reality check: Theorem 7.1 asserts there is exactly 2n-8 cluster variables
+        assert len(clustervars) == 2 * (self.a + self.b) - 8
+        clusterVariables = [ClusterVariable(x, cluster = True) for x in clustervars]
+        frozenVariables = [ClusterVariable(x, cluster = False) for x in frozen]
+
+        # Print information so far
+        if verbose:
+            print("Cluster Variables = ", end = " ")
+            print(*clustervars)
+            print("Frozen Variables = ", end = " ")
+            print(*frozen)
+        
+        equation_names = ["6.1", "6.2", "6.3b", "6.3w", "6.4", "6.5"]
+
+        def ProcessRelation(skein: SkeinRelation):
+            # Factorize all 3 terms
+            # Remove all the common terms like one would do in a factorization
+            # Check if one of the terms is 0 then do something about it
+            # return the equation
+
+            fr = self.Factor(skein.fr, True, verbose = veryVerbose)
+            to = self.Factor(skein.to, True, verbose = veryVerbose)
+            ex = self.Factor(skein.ex, True, verbose = veryVerbose)
+
+            extra_ex = []
+            for j in ex: 
+                extra_ex.append(j.copy())
+            
+            for j in extra_ex:
+                if (Contains(fr, j) or fr.isZero) and (Contains(fr, j) or to.isZero):
+                    ex.replace(j, [], verbose, "factor common terms")
+                    fr.replace(j, [])
+                    to.replace(j, [])
+
+            if fr.isZero:
+                assert to == ex
+                return
+            if to.isZero:
+                assert fr == ex
+                return
+            if ex.isZero:
+                assert fr.isZero and to.isZero
+                return
+
+            assert len(ex.equation) == 2
+            
+            if not checkIsAllClusterVariables(fr): return
+            if not checkIsAllClusterVariables(to): return
+
+            return SkeinRelation(ex.equation, to.equation, fr.equation, skein.signature)
+        
+        def Relation61(p, q, r, original, relations):
+            if isEdge(p,q) or isEdge(q,r) or isEdge(p,r): return
+            ex, to, fr = [self.J2(p, q, r), self.J3(p, q, r)], [self.J1(p, r), self.J1(r, q), self.J1(q, p)] ,[self.J1(p, q), self.J1(q, r), self.J1(r, p)]
+            sign = f"from {equation_names[0]} with t = " + str((p, q, r))
+            eq = SkeinRelation(ex, to, fr, sign, original = original)
+            peq = ProcessRelation(eq)
+            if peq is not None:
+                relations.append(peq)
+        
+        def Relation6245(p, q, r, s, original, relations):
+            ex, to, fr = [self.J1(r, p), self.J2(q, r, s)], [self.J1(r, q), self.J2(p, r, s)], [self.J1(r, s), self.J2(q, r, p)]
+            sign = f"from {equation_names[1]}" + " with p, q, r, s = " + str((p, q, r, s))
+            eq = SkeinRelation(ex, to, fr, sign, original = original)
+            peq = ProcessRelation(eq)
+            if peq is not None:
+                relations.append(peq)
+            
+            ex, to, fr = [self.J1(r, p), self.J4(p, q, r, s)], [self.J1(q, p), self.J1(p, r), self.J1(r, s)], [self.J2(p, r, s), self.J3(q, r, p)]
+            sign = f"from {equation_names[4]}" + " with p, q, r, s = " + str((p, q, r, s))
+            eq = SkeinRelation(ex, to, fr, sign, original = original)
+            peq = ProcessRelation(eq)
+            if peq is not None:
+                relations.append(peq)
+
+            ex, to, fr = [self.J1(p, r), self.J4(q, r, s, p)], [self.J1(q, r), self.J1(p, s), self.J1(r, p)], [self.J2(p, r, s), self.J3(q, r, p)]
+            sign = f"from {equation_names[4]}" + " with p, q, r, s = " + str((p, q, r, s))
+            eq = SkeinRelation(ex, to, fr, sign, original = original)
+            peq = ProcessRelation(eq)
+            if peq is not None:
+                relations.append(peq)
+            
+        def Relation63(p, q, r, s, original, relations):
+            if self.color(p, True) == w and self.color(p + 1, True) == b:
+                ex, to, fr = [self.J1(p, p+2), self.J1(s, p+1)], [self.J1(p, p+1), self.J1(s, p+2)], [self.J1(s, p)]
+                sign = f"from {equation_names[3]}" + " with p, q, r, s = " + str((p, q, r, s))
+                eq = SkeinRelation(ex, to, fr, sign, original = original)
+                peq = ProcessRelation(eq)
+                if peq is not None:
+                    relations.append(peq)
+            elif self.color(p, True) == b and self.color(p + 1, True) == w:
+                ex, to, fr = [self.J1(p + 2, p), self.J1(p+1, s)], [self.J1(p+1, p), self.J1(p+2, s)], [self.J1(p, s)]
+                sign = f"from {equation_names[2]}" + " with p, q, r, s = " + str((p, q, r, s))
+                eq = SkeinRelation(ex, to, fr, sign, original = original)
+                peq = ProcessRelation(eq)
+                if peq is not None:
+                    relations.append(peq)
+            
+        # Add exchange relations to the big bag
+        def AddRelation(relations: list, tri: Triangulation, original):
+            # Handles equation 6.1
+            for t in tri.trigs:
+                p, q, r = t
+                Relation61(p, q, r, original, relations)
+            
+            for c in tri.extended_four_cycles:
+                p, q, r, s = c
+                Relation63(p, q, r, s, original, relations)
+                Relation6245(p, q, r, s, original, relations)
+            
+        
+        addedRels, relations = [], []
+        processed_triangulations = []
+        AddRelation(relations, self.triangulation, original = True)
+        processed_triangulations.append(sorted(self.triangulation.diagonals))
+
+        # We use an additional list to keep track of which triangulation have we considered, so to not do duplicates. Repeatedly factorizing stuff turns out to be very expensive
+        for i in range(self.l):
+            p, q, r, s = i, (i + 1) % self.l, (i + 2) % self.l, (i + 3) % self.l
+            fil1 = [a for a in self.triangulation.diagonals if a == (p,s) or a == (s,p)]
+            if len(fil1) > 0:
+                # For loops are expensive, we check if their colors alternate first
+                cols = (self.color(p), self.color(q), self.color(r))
+                if cols != (b, w, b) and cols != (w,b,w): continue
+                # Find the element that cooresponds to the triangulation of this quadrilateral and then swap the diagonals
+                triangulation = [(q, s) if set(a) == set((p,r)) else (p, r) if set(a) == set((q,s)) else a for a in self.triangulation.diagonals]
+                if Contains(processed_triangulations, triangulation): continue
+                processed_triangulations.append(sorted(triangulation))
+                AddRelation(relations, Triangulation(self.l, triangulation), original = False)
+
+        # Print current progress
+        if verbose:
+            print("\n\n Now process the Exchange relations \n\n")
+        
+            print("Triangulations:")
+            print(*processed_triangulations, sep = "\n")
+
+            print("Pre pass:" + str(len(relations)) + " left")
+            print(*relations, sep = "\n")
+            print("\n\n")
+
+        # Now filter
+        # First pass: filter out all duplicates and everything that is not a valid relation
+        for relation in relations:
+            if Contains(addedRels, relation): continue
+            if not Contains(clustervars, relation.equation[0]): continue
+            addedRels.append(relation)
+
+        # Print progress after first pass
+        if verbose:
+            print("First pass:" + str(len(addedRels)) + " left")
+            print(*addedRels, sep = "\n")
+            print("\n\n")
+
+        # Do second pass: filter out all the from-to swapped duplicates. One of them is not original
+        addedRels2 = addedRels
+        if len(addedRels) < len(clustervars):
+            print(*addedRels)
+            raise AssertionError("Too few added relations!")
+        elif len(addedRels) > len(clustervars):
+            # Second pass: filter out all the from-to swapped duplicates. One of them is not original
+            addedRels2 = []
+            for relation in addedRels:
+                dualRelation = SkeinRelation(relation.ex.equation, relation.fr.equation, relation.to.equation, relation.signature, relation.original)
+                if Contains(addedRels2, relation) or Contains(addedRels2, dualRelation): continue
+
+                # If the list after first pass contains both, then add the one that is original, otherwise just add it
+                if Contains(addedRels, dualRelation):
+                    if relation.original: addedRels2.append(relation)
+                    elif dualRelation.original: addedRels2.append(dualRelation)
+                    else: raise AssertionError("Both relations are unoriginal!")
+                else: 
+                    addedRels2.append(relation)
+        if len(addedRels2) > len(clustervars):
+            print(*addedRels2, sep = "\n")
+            raise AssertionError("There are too many exchange relations!")
+        if len(addedRels2) < len(clustervars):
+            print(*addedRels2, sep = "\n")
+            raise AssertionError("There are too few exchange relations!")
+        if verbose:
+            print(*addedRels2, sep = "\n")
+            print("\n\n\n\n\n")
+        
+        # Do third pass: some exchange relations might be opposite sides so we need to swap the ones whereever necessary.
+        # Create a buffer B (queue) to store exchage relations since some of the "arbitrary choices" we make might softlock us later. Free will is a lie
+        # Fix the first one by going through all cluster variables and frozen vars
+        # Create a list L of processed exchange relation and add the first one in
+        # Add all other equations into B
+        # Make a counter = 0 to see if the buffer went through one full cycle then that means 
+        # while B is not empty:
+        #   Get the first equation and see if it can only be one of the orientations
+        #   if yes, (swap it and) add it to L; also reset counter to len(B)
+        #   otherwise add it back to B and counter -= 1
+        #   if counter == 0:
+        #       We need to make an arbitrary choice. So we fix the first one from the list.
 
         buffer = [addedRels2[i] for i in range(1, len(addedRels2))]
         processed_relations = [addedRels2[0]]
@@ -1279,6 +1289,23 @@ class TriangulationDiagram(TensorDiagram):
                 processed_relations += [eqn]
 
         assert len(processed_relations) == len(clusterVariables)
+        
+        # Sort the exchange relations
+        def is_lt(er1: SkeinRelation, er2: SkeinRelation):
+            x1 = er1.ex[0]
+            x2 = er2.ex[0]
+            index_of_x1 = [i for i in range(len(clusterVariables)) if clusterVariables[i].j == x1][0]
+            index_of_x2 = [i for i in range(len(clusterVariables)) if clusterVariables[i].j == x2][0]
+            return index_of_x1 < index_of_x2
+        
+        swapped = True
+        while swapped:
+            swapped = False
+            for i in range(len(processed_relations) - 1):
+                if is_lt(processed_relations[i+1], processed_relations[i]):
+                    processed_relations[i+1], processed_relations[i] = processed_relations[i], processed_relations[i+1] 
+                    swapped = True
+
 
         # Might as well also generate the exchange matrix
         self.cluster = ClusterAlgebra(clusterVariables, frozenVariables, processed_relations)
@@ -1315,26 +1342,26 @@ def GenerateSignature(t: tuple, length = 9):
 
 # Generate comparison diagrams for all cluster variables and frozen variables
 def CompareVariable(cv, cv2, sig, sig2, scale=1.5):
-        dia = TensorDiagram(sig)
-        dia2 = TensorDiagram(sig2)
+    dia = TensorDiagram(sig)
+    dia2 = TensorDiagram(sig2)
 
-        dia.AddJInvariant(cv)
-        dia2.AddJInvariant(cv2)
+    dia.AddJInvariant(cv)
+    dia2.AddJInvariant(cv2)
 
-        dia.shift = (-1.5, 0)
-        dia2.shift = (1.5, 0)
+    dia.shift = (-1.5, 0)
+    dia2.shift = (1.5, 0)
 
-        dia.OptimizeDiagram()
-        dia2.OptimizeDiagram()
+    dia.OptimizeDiagram()
+    dia2.OptimizeDiagram()
 
-        # Attempt to print both of them together
-        print("This diagram corresponds to the cluster variable \\({}\\) and \\({}\\)".format(cv, cv2))
-        st = f"\n\\centering\n\\begin{{tikzpicture}}[scale = {scale}]\n\t\\filldraw[color=black, fill=white!0, thin](1.5,0) circle (1);"
-        st += "\t\\filldraw[color=black, fill=white!0, thin](-1.5,0) circle (1);"
-        st += dia.__generateStrContents__()
-        st += dia2.__generateStrContents__()
-        st += "\n\\end{tikzpicture}\n\\par\n\\raggedright\n\n"
-        return st
+    # Attempt to print both of them together
+    print("This diagram corresponds to the cluster variable \\({}\\) and \\({}\\)".format(cv, cv2))
+    st = f"\n\\centering\n\\begin{{tikzpicture}}[scale = {scale}]\n\t\\filldraw[color=black, fill=white!0, thin](1.5,0) circle (1);"
+    st += "\t\\filldraw[color=black, fill=white!0, thin](-1.5,0) circle (1);"
+    st += dia.__generateStrContents__()
+    st += dia2.__generateStrContents__()
+    st += "\n\\end{tikzpicture}\n\\par\n\\raggedright\n\n"
+    return st
 
 # Generate comparison diagrams for all cluster variables and frozen variables
 def CompareCV(diagram1, diagram2, scale=1.5):
@@ -1349,7 +1376,7 @@ def CompareCV(diagram1, diagram2, scale=1.5):
     for i in range(n): print(CompareVariable(diagram1.frozenVariables[i], diagram2.frozenVariables[i], diagram1.signature, diagram2.signature, scale=1.5))
 
 # Gets basic information about the cluster
-def GetInfo(diagram1, diagram2 = None, printer = False, print_quiver = False):
+def GetInfo(diagram1, diagram2 = None, printer = False):
     if not diagram1.generated: diagram1.GenerateCluster()
     print(" Cluster: ", end = " ")
     print(*diagram1.clusterVariables, end = " ")
@@ -1365,13 +1392,18 @@ def GetInfo(diagram1, diagram2 = None, printer = False, print_quiver = False):
         print(*diagram2.frozenVariables)
         if printer: print(*diagram2.cluster.exchangeRelations, sep = "\n")
         print(diagram1.clusterVariables == diagram2.clusterVariables)
-        
-    if print_quiver:
-        print(diagram1.quiver)
-        if diagram2 is not None: print(diagram2.quiver)
 
 # Number of arrows in a quiver
 def weight(B_matrix):
     w = np.count_nonzero(np.abs(B_matrix))
     if w % 2: raise AssertionError
     return w // 2
+
+# Permutes the signature clockwise
+def Permute(sig, n: int):
+    if n < 0:
+        return Permute(sig, n + len(sig))
+    if n == 1:
+        return sig[1:] + sig[:1]
+    sig = Permute(sig, n-1)
+    return Permute(sig, 1)

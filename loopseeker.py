@@ -243,25 +243,45 @@ def search(B_matrix, target, max_search_length, try_first = []):
     #       if the quiver is equivalent to target up to relabelling:
     #           return this sequence
     #   else add all mutation sequences to this quiver's neighbour into the queue
+
+    # Helper function to help compile and return stuff
+    def check_is_relabelling(seq: list, B1: np.ndarray, target: np.ndarray, out_relabelling: list):
+        is_relabel, relabelling = is_quiver_relabelling(B1, target)
+        is_relabel_reversed, relabelling2 = is_quiver_relabelling(-B1, target)
+        if is_relabel:
+            seq.append(i)
+            for r in relabelling:
+                out_relabelling += [r]
+            return True
+        if is_relabel_reversed:
+            seq.append(i)
+            for r in relabelling2:
+                out_relabelling += [r]
+            B1 = -B1
+            return True
+        return False
+    
+    # Main loops
     num_nodes = B_matrix.shape[0]
+    relabel = []
     assert  B_matrix.shape[0] ==  B_matrix.shape[1]
     if len(try_first) > 0:
         for seq in try_first:
             B = Mutate(B_matrix, seq)
-            is_relabel, relabelling = is_quiver_relabelling(B, target)
-            if is_relabel:
-                return seq, relabelling
+            if check_is_relabelling(seq, B, target, relabel):
+                B_matrix = B
+                return seq, relabel
         print("The try first ones are not right! Doing regular search...")
     q = [[]]
     while len(q) > 0:
         seq = q.pop(0)
         B = Mutate(B_matrix, seq)
         for i in range(num_nodes):
-            B1 = Mutate(B, i)
-            is_relabel, relabelling = is_quiver_relabelling(B1, target)
-            if is_relabel:
-                seq.append(i)
-                return seq, relabelling
+            B = Mutate(B, i)
+            if check_is_relabelling(seq, B, target, relabel):
+                B_matrix = B
+                return seq, relabel
+            # The generated quiver might sometimes be up to a global reversal of arrows so we have to take care of that
 
         if len(seq) < max_search_length:
             for i in range(num_nodes):
@@ -275,7 +295,7 @@ def is_quiver_relabelling(B_matrix, target):
     if B_matrix.shape != target.shape: return False, np.array([])
     if weight(B_matrix) != weight(target): return False, np.array([])
     num_nodes = B_matrix.shape[0]
-    if np.count_nonzero(B_matrix == target) == num_nodes ** 2: return True, np.arange(num_nodes)
+    if np.count_nonzero(B_matrix != target) == 0 or np.count_nonzero(B_matrix != -target) == 0: return True, np.arange(num_nodes)
     # If they do not have the same amount of each multiple arrows it is definitely not equivalent up to relabelling
     # B_pos = np.abs(B_matrix)
     # T_pos = np.abs(target)
@@ -296,7 +316,7 @@ def is_quiver_relabelling(B_matrix, target):
         num_out_arrows = np.sum(row_i[row_i > 0])
         key = (num_in_arrows, num_out_arrows)
         if key in valence.keys():
-            valence[key].append(i)
+            valence[key] += [i]
         else:
             valence[key] = [i]
         
@@ -306,6 +326,9 @@ def is_quiver_relabelling(B_matrix, target):
     
     # print(sorted(B_valence.keys()), sorted(T_valence.keys()))
     if sorted(B_valence.keys()) != sorted(T_valence.keys()): return False, np.array([])
+    for key in B_valence.keys():
+        if len(B_valence[key]) != len(T_valence[key]):
+            return False, np.array([])
     # We feel like we ran out of ideas so we just try every reindexing now.
     # Make an empty list Q to store all the possible "sensible" reindexings in the sense of matching valence
     # Also keep track of the number n of permutations generated up to the last key
@@ -319,6 +342,14 @@ def is_quiver_relabelling(B_matrix, target):
     #           append this numpy array to Q
     #   update num_sequences
     queue = [np.zeros((num_nodes,), dtype = int)]
+
+    # Puts the permutation in the sequence
+    def output(seq, key, perm):
+        seq_copy = np.array(seq, dtype = int)
+        # print(perm, T_valence[key], seq_copy, seq_copy[T_valence[key]])
+        seq_copy[T_valence[key]] = perm
+        queue.append(seq_copy)
+
     num_sequences = 1
     for key in B_valence.keys():
         for _ in range(num_sequences):
@@ -327,11 +358,7 @@ def is_quiver_relabelling(B_matrix, target):
             # Generate using Heap algorithm
             n = len(perm)
             stack_state = np.zeros((n, ), dtype = int)
-            # First output the original
-            seq_copy = np.array(seq, dtype = int)
-            seq_copy[T_valence[key]] = perm
-            queue.append(seq_copy)
-            n = len(perm)
+            output(seq, key, perm)
             i = 0
             while i < n:
                 if stack_state[i] < i:
@@ -339,9 +366,7 @@ def is_quiver_relabelling(B_matrix, target):
                         perm[[0, i]] = perm[[i, 0]]
                     else:
                         perm[[stack_state[i], i]] = perm[[i, stack_state[i]]]
-                    seq_copy = np.array(seq, dtype = int)
-                    seq_copy[T_valence[key]] = perm
-                    queue.append(seq_copy)
+                    output(seq, key, perm)
                     stack_state[i] += 1
                     i = 0
                 else:
